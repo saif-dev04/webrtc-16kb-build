@@ -1,0 +1,101 @@
+name: Build WebRTC 16KB
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cpu: arm64
+            abi: arm64-v8a
+          - cpu: arm
+            abi: armeabi-v7a
+          - cpu: x64
+            abi: x86_64
+          - cpu: x86
+            abi: x86
+    
+    steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo docker system prune -af
+          df -h
+          
+      - name: Setup depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git ~/depot_tools
+          echo "$HOME/depot_tools" >> $GITHUB_PATH
+          
+      - name: Fetch WebRTC
+        run: |
+          mkdir ~/webrtc && cd ~/webrtc
+          cat > .gclient << 'GCLIENT'
+          solutions = [{"name": "src", "url": "https://webrtc.googlesource.com/src.git", "deps_file": "DEPS", "managed": False}]
+          target_os = ["android"]
+          GCLIENT
+          gclient sync --nohooks --no-history --shallow
+          
+      - name: Install Dependencies
+        run: |
+          cd ~/webrtc/src
+          ./build/install-build-deps.sh --no-prompt --android
+          cd ~/webrtc && gclient runhooks
+          
+      - name: Build ${{ matrix.abi }}
+        run: |
+          cd ~/webrtc/src
+          mkdir -p out/${{ matrix.abi }}
+          cat > out/${{ matrix.abi }}/args.gn << 'ARGS'
+          target_os = "android"
+          target_cpu = "${{ matrix.cpu }}"
+          is_debug = false
+          rtc_include_tests = false
+          rtc_build_examples = false
+          ARGS
+          gn gen out/${{ matrix.abi }}
+          ninja -C out/${{ matrix.abi }} libjingle_peerconnection_so
+          
+      - name: Verify & Upload
+        run: |
+          cd ~/webrtc/src/out/${{ matrix.abi }}
+          ls -la libjingle_peerconnection_so.so
+          readelf -l libjingle_peerconnection_so.so | head -20
+          mkdir -p /tmp/output/${{ matrix.abi }}
+          cp libjingle_peerconnection_so.so /tmp/output/${{ matrix.abi }}/
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-${{ matrix.abi }}
+          path: /tmp/output/${{ matrix.abi }}/
+          retention-days: 90
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: libs
+          
+      - name: Package All
+        run: |
+          mkdir -p jniLibs
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            mkdir -p jniLibs/$abi
+            cp libs/webrtc-$abi/*.so jniLibs/$abi/ 2>/dev/null || true
+          done
+          ls -laR jniLibs/
+          
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-16kb-all-abis
+          path: jniLibs/
+          retention-days: 90
