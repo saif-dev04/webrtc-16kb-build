@@ -58,17 +58,54 @@ jobs:
           is_debug = false
           rtc_include_tests = false
           rtc_build_examples = false
+          rtc_build_tools = false
           ARGS
           gn gen out/${{ matrix.abi }}
-          ninja -C out/${{ matrix.abi }} libjingle_peerconnection_so
           
-      - name: Verify & Upload
+          # Build native library AND Java SDK
+          ninja -C out/${{ matrix.abi }} libjingle_peerconnection_so sdk/android:libwebrtc
+          
+      - name: Verify & Prepare Artifacts
         run: |
           cd ~/webrtc/src/out/${{ matrix.abi }}
+          
+          echo "=== Native Library ==="
           ls -la libjingle_peerconnection_so.so
           readelf -l libjingle_peerconnection_so.so | head -20
+          
+          echo ""
+          echo "=== Looking for JAR files ==="
+          find . -name "*.jar" -type f 2>/dev/null || true
+          find . -name "libwebrtc*" -type f 2>/dev/null || true
+          
+          # Prepare output directory
           mkdir -p /tmp/output/${{ matrix.abi }}
           cp libjingle_peerconnection_so.so /tmp/output/${{ matrix.abi }}/
+          
+          # Find and copy JAR file
+          JAR_PATH=""
+          for path in \
+            "lib.java/sdk/android/libwebrtc.jar" \
+            "obj/sdk/android/libwebrtc.jar" \
+            "libwebrtc.jar"; do
+            if [ -f "$path" ]; then
+              JAR_PATH="$path"
+              break
+            fi
+          done
+          
+          if [ -z "$JAR_PATH" ]; then
+            JAR_PATH=$(find . -name "libwebrtc.jar" -type f 2>/dev/null | head -1)
+          fi
+          
+          if [ -n "$JAR_PATH" ] && [ -f "$JAR_PATH" ]; then
+            cp "$JAR_PATH" /tmp/output/${{ matrix.abi }}/libwebrtc.jar
+            echo "✅ JAR found at: $JAR_PATH"
+          else
+            echo "⚠️ JAR not found"
+          fi
+          
+          ls -la /tmp/output/${{ matrix.abi }}/
           
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -87,15 +124,41 @@ jobs:
           
       - name: Package All
         run: |
-          mkdir -p jniLibs
+          mkdir -p jniLibs libs_jar
+          
+          # Copy native libraries
           for abi in arm64-v8a armeabi-v7a x86_64 x86; do
             mkdir -p jniLibs/$abi
             cp libs/webrtc-$abi/*.so jniLibs/$abi/ 2>/dev/null || true
           done
-          ls -laR jniLibs/
           
-      - uses: actions/upload-artifact@v4
+          # Copy JAR (only need one since Java is ABI-independent)
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            if [ -f "libs/webrtc-$abi/libwebrtc.jar" ]; then
+              cp "libs/webrtc-$abi/libwebrtc.jar" libs_jar/
+              echo "✅ Copied libwebrtc.jar from $abi"
+              break
+            fi
+          done
+          
+          echo ""
+          echo "=== Native Libraries ==="
+          ls -laR jniLibs/
+          echo ""
+          echo "=== Java JAR ==="
+          ls -la libs_jar/ 2>/dev/null || echo "No JAR found"
+          
+      - name: Upload Native Libraries
+        uses: actions/upload-artifact@v4
         with:
           name: webrtc-16kb-all-abis
           path: jniLibs/
           retention-days: 90
+          
+      - name: Upload Java JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-libwebrtc-jar
+          path: libs_jar/
+          retention-days: 90
+          if-no-files-found: warn
