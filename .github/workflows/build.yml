@@ -59,6 +59,7 @@ jobs:
           rtc_include_tests = false
           rtc_build_examples = false
           rtc_build_tools = false
+          android_static_analysis = "off"
           ARGS
           gn gen out/${{ matrix.abi }}
           
